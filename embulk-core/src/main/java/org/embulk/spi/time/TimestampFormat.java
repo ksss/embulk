@@ -57,12 +57,15 @@ public class TimestampFormat
 
     public static DateTimeZone parseDateTimeZone(String s)
     {
-        final int rubyStyleTimeOffsetInSecond = TimeZoneConverter.dateZoneToDiff(s);
+        final int rubyStyleTimeOffsetInSecond = RubyTimeZoneTab.dateZoneToDiff(s);
 
         if (rubyStyleTimeOffsetInSecond != Integer.MIN_VALUE) {
             return DateTimeZone.forOffsetMillis(rubyStyleTimeOffsetInSecond * 1000);
         }
 
+        // Embulk has accepted to parse Joda-Time's time zone IDs in Timestamps since v0.2.0
+        // although the formats are based on Ruby's strptime. Joda-Time's time zone IDs are
+        // continuously to be accepted while Ruby's are supported since v0.8.37 in addition.
         if(s.startsWith("+") || s.startsWith("-")) {
             return DateTimeZone.forID(s);
 

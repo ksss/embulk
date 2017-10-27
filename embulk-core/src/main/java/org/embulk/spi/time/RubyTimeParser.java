@@ -1,3 +1,36 @@
+/*
+ * The following license block applies to parts of this source code as described in the Javadoc.
+ */
+/***** BEGIN LICENSE BLOCK *****
+ * Version: EPL 1.0/GPL 2.0/LGPL 2.1
+ *
+ * The contents of this file are subject to the Eclipse Public
+ * License Version 1.0 (the "License"); you may not use this file
+ * except in compliance with the License. You may obtain a copy of
+ * the License at http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Software distributed under the License is distributed on an "AS
+ * IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
+ * implied. See the License for the specific language governing
+ * rights and limitations under the License.
+ *
+ * Copyright (C) 2002, 2009 Jan Arne Petersen <jpetersen@uni-bonn.de>
+ * Copyright (C) 2004 Charles O Nutter <headius@headius.com>
+ * Copyright (C) 2004 Anders Bengtsson <ndrsbngtssn@yahoo.se>
+ * Copyright (C) 2004 Stefan Matthias Aust <sma@3plus4.de>
+ *
+ * Alternatively, the contents of this file may be used under the terms of
+ * either of the GNU General Public License Version 2 or later (the "GPL"),
+ * or the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ * in which case the provisions of the GPL or the LGPL are applicable instead
+ * of those above. If you wish to allow use of your version of this file only
+ * under the terms of either the GPL or the LGPL, and not to allow others to
+ * use your version of this file under the terms of the EPL, indicate your
+ * decision by deleting the provisions above and replace them with the notice
+ * and other provisions required by the GPL or the LGPL. If you do not delete
+ * the provisions above, a recipient may use your version of this file under
+ * the terms of any one of the EPL, the GPL or the LGPL.
+ ***** END LICENSE BLOCK *****/
 package org.embulk.spi.time;
 
 import java.io.IOException;
@@ -10,19 +43,31 @@ import java.util.Arrays;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.embulk.spi.time.lexer.StrptimeLexer;
-
 /**
- * This is Java implementation of ext/date/date_strptime.c in Ruby v2.3.1.
- * @see <a href="https://github.com/ruby/ruby/blob/394fa89c67722d35bdda89f10c7de5c304a5efb1/ext/date/date_strptime.c">date_strptime.c</a>
+ * RubyTimeParser is a Ruby-compatible time parser.
  *
- * TODO
- * This class is tentatively required for {@code TimestampParser} class.
- * The {@code StrptimeParser} and {@code RubyDateParser} will be merged into JRuby
- * (jruby/jruby#4591). embulk-jruby-strptime is removed when Embulk start using
- * the JRuby that bundles embulk-jruby-strptime.
+ * Embulk's timestamp formats are based on Ruby's formats for historical reasons, and kept for compatibility.
+ * Embulk maintains its own implementation of Ruby-compatible time parser to be independent from JRuby.
+ *
+ * This class is intentionally package-private so that plugins do not directly depend.
+ *
+ * This class is almost reimplementation of Ruby v2.3.1's ext/date/date_strptime.c. See its COPYING for license.
+ *
+ * @see <a href="https://svn.ruby-lang.org/cgi-bin/viewvc.cgi/tags/v2_3_1/ext/date/date_strptime.c?view=markup">ext/date/date_strptime.c</a>
+ * @see <a href="https://svn.ruby-lang.org/cgi-bin/viewvc.cgi/tags/v2_3_1/COPYING?view=markup">COPYING</a>
+ *
+ * This class is contributed to the JRuby project before it is refactored on the Embulk side.
+ *
+ * @see <a href="https://github.com/jruby/jruby/pull/4635">Implement RubyDateParser in Java by muga - Pull Request #4635 - jruby/jruby</a>
+ *
+ * Some components are imported from JRuby 9.1.5.0's core/src/main/java/org/jruby/util/RubyDateFormatter.java and
+ * lib/ruby/stdlib/date/format.rb with modification. Eclipse Public License version 1.0 is applied for the import.
+ * See its COPYING for license.
+ *
+ * @see <a href="https://github.com/jruby/jruby/blob/9.1.5.0/core/src/main/java/org/jruby/util/RubyDateFormatter.java">core/src/main/java/org/jruby/util/RubyDateFormatter.java</a>
+ * @see <a href="https://github.com/jruby/jruby/blob/9.1.5.0/COPYING">COPYING</a>
  */
-public class StrptimeParser
+class RubyTimeParser
 {
     // day_names
     private static final String[] DAY_NAMES = new String[] {
@@ -42,238 +87,54 @@ public class StrptimeParser
             "am", "pm", "a.m.", "p.m."
     };
 
-    /**
-     * Ported Date::Format::Bag from JRuby 9.1.5.0's lib/ruby/stdlib/date/format.rb.
-     * @see <a href="https://github.com/jruby/jruby/blob/036ce39f0476d4bd718e23e64caff36bb50b8dbc/lib/ruby/stdlib/date/format.rb">format.rb</a>
-     */
-    public static class FormatBag
+    private final RubyTimeFormatLexer lexer;
+
+    public RubyTimeParser()
     {
-        private int mDay = Integer.MIN_VALUE;
-        private int wDay = Integer.MIN_VALUE;
-        private int cWDay = Integer.MIN_VALUE;
-        private int yDay = Integer.MIN_VALUE;
-        private int cWeek = Integer.MIN_VALUE;
-        private int cWYear = Integer.MIN_VALUE;
-        private int min = Integer.MIN_VALUE;
-        private int mon = Integer.MIN_VALUE;
-        private int hour = Integer.MIN_VALUE;
-        private int year = Integer.MIN_VALUE;
-        private int sec = Integer.MIN_VALUE;
-        private int wNum0 = Integer.MIN_VALUE;
-        private int wNum1 = Integer.MIN_VALUE;
-
-        private String zone = null;
-
-        private int secFraction = Integer.MIN_VALUE; // Rational
-        private int secFractionSize = Integer.MIN_VALUE;
-
-        private long seconds = Long.MIN_VALUE; // long or Rational
-        private int secondsSize = Integer.MIN_VALUE;
-
-        private int merid = Integer.MIN_VALUE;
-        private int cent = Integer.MIN_VALUE;
-
-        private boolean fail = false;
-        private String leftover = null;
-
-        public int getMDay()
-        {
-            return mDay;
-        }
-
-        public int getWDay()
-        {
-            return wDay;
-        }
-
-        public int getCWDay()
-        {
-            return cWDay;
-        }
-
-        public int getYDay()
-        {
-            return yDay;
-        }
-
-        public int getCWeek()
-        {
-            return cWeek;
-        }
-
-        public int getCWYear()
-        {
-            return cWYear;
-        }
-
-        public int getMin()
-        {
-            return min;
-        }
-
-        public int getMon()
-        {
-            return mon;
-        }
-
-        public int getHour()
-        {
-            return hour;
-        }
-
-        public int getYear()
-        {
-            return year;
-        }
-
-        public int getSec()
-        {
-            return sec;
-        }
-
-        public int getWNum0()
-        {
-            return wNum0;
-        }
-
-        public int getWNum1()
-        {
-            return wNum1;
-        }
-
-        public String getZone()
-        {
-            return zone;
-        }
-
-        public int getSecFraction()
-        {
-            return secFraction;
-        }
-
-        public int getSecFractionSize()
-        {
-            return secFractionSize;
-        }
-
-        public long getSeconds()
-        {
-            return seconds;
-        }
-
-        public int getSecondsSize()
-        {
-            return secondsSize;
-        }
-
-        public int getMerid()
-        {
-            return merid;
-        }
-
-        public int getCent()
-        {
-            return cent;
-        }
-
-        void fail()
-        {
-            fail = true;
-        }
-
-        public String getLeftover()
-        {
-            return leftover;
-        }
-
-        public boolean setYearIfNotSet(int v)
-        {
-            if (has(year)) {
-                return false;
-            }
-            else {
-                year = v;
-                return true;
-            }
-        }
-
-        public boolean setMonthIfNotSet(int v)
-        {
-            if (has(mon)) {
-                return false;
-            }
-            else {
-                mon = v;
-                return true;
-            }
-        }
-
-        public boolean setMdayIfNotSet(int v)
-        {
-            if (has(mDay)) {
-                return false;
-            }
-            else {
-                mDay = v;
-                return true;
-            }
-        }
-
-        public boolean hasSeconds()
-        {
-            return seconds != Long.MIN_VALUE;
-        }
-
-        public static boolean has(int v)
-        {
-            return v != Integer.MIN_VALUE;
-        }
-    }
-
-    private final StrptimeLexer lexer;
-
-    public StrptimeParser()
-    {
-        this.lexer = new StrptimeLexer((Reader) null);
+        this.lexer = new RubyTimeFormatLexer((Reader) null);
     }
 
     /**
-     * Ported from org.jruby.util.RubyDateFormatter#addToPattern in JRuby 9.1.5.0
-     * under EPL.
-     * @see <a href="https://github.com/jruby/jruby/blob/036ce39f0476d4bd718e23e64caff36bb50b8dbc/core/src/main/java/org/jruby/util/RubyDateFormatter.java">RubyDateFormatter.java</a>
+     * This method is imported from JRuby 9.1.5.0's core/src/main/java/org/jruby/util/RubyDateFormatter.java.
+     * Eclipse Public License version 1.0 is applied for the import. See its COPYING for license.
+     *
+     * @see <a href="https://github.com/jruby/jruby/blob/9.1.5.0/core/src/main/java/org/jruby/util/RubyDateFormatter.java">core/src/main/java/org/jruby/util/RubyDateFormatter.java</a>
+     * @see <a href="https://github.com/jruby/jruby/blob/9.1.5.0/COPYING">COPYING</a>
      */
-    private void addToPattern(final List<StrptimeToken> compiledPattern, final String str)
+    private void addToPattern(final List<RubyTimeFormatToken> compiledPattern, final String str)
     {
         for (int i = 0; i < str.length(); i++) {
             final char c = str.charAt(i);
             if (('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')) {
-                compiledPattern.add(StrptimeToken.format(c));
+                compiledPattern.add(RubyTimeFormatToken.getFormatDirectiveToken(c));
             }
             else {
-                compiledPattern.add(StrptimeToken.str(Character.toString(c)));
+                compiledPattern.add(new RubyTimeFormatStringToken(Character.toString(c)));
             }
         }
     }
 
     /**
-     * Ported from org.jruby.util.RubyDateFormatter#compilePattern in JRuby 9.1.5.0
-     * under EPL.
-     * @see <a href="https://github.com/jruby/jruby/blob/036ce39f0476d4bd718e23e64caff36bb50b8dbc/core/src/main/java/org/jruby/util/RubyDateFormatter.java">RubyDateFormatter.java</a>
+     * This method is imported from JRuby 9.1.5.0's core/src/main/java/org/jruby/util/RubyDateFormatter.java.
+     * Eclipse Public License version 1.0 is applied for the import. See its COPYING for license.
+     *
+     * @see <a href="https://github.com/jruby/jruby/blob/9.1.5.0/core/src/main/java/org/jruby/util/RubyDateFormatter.java">core/src/main/java/org/jruby/util/RubyDateFormatter.java</a>
+     * @see <a href="https://github.com/jruby/jruby/blob/9.1.5.0/COPYING">COPYING</a>
      */
-    public List<StrptimeToken> compilePattern(final String pattern)
+    public List<RubyTimeFormatToken> compilePattern(final String pattern)
     {
-        final List<StrptimeToken> compiledPattern = new LinkedList<>();
+        final List<RubyTimeFormatToken> compiledPattern = new LinkedList<>();
         final Reader reader = new StringReader(pattern); // TODO Use try-with-resource statement
         lexer.yyreset(reader);
 
-        StrptimeToken token;
+        RubyTimeFormatToken token;
         try {
             while ((token = lexer.yylex()) != null) {
-                if (token.getFormat() != StrptimeFormat.FORMAT_SPECIAL) {
+                if (token.getFormatDirective() != RubyTimeFormatDirective.SPECIAL) {
                     compiledPattern.add(token);
                 }
                 else {
-                    char c = (Character) token.getData();
+                    char c = token.getSpecifier();
                     switch (c) {
                         case 'c':
                             addToPattern(compiledPattern, "a b e H:M:S Y");
@@ -286,7 +147,7 @@ public class StrptimeParser
                             addToPattern(compiledPattern, "Y-m-d");
                             break;
                         case 'n':
-                            compiledPattern.add(StrptimeToken.str("\n"));
+                            compiledPattern.add(new RubyTimeFormatStringToken("\n"));
                             break;
                         case 'R':
                             addToPattern(compiledPattern, "H:M");
@@ -299,19 +160,19 @@ public class StrptimeParser
                             addToPattern(compiledPattern, "H:M:S");
                             break;
                         case 't':
-                            compiledPattern.add(StrptimeToken.str("\t"));
+                            compiledPattern.add(new RubyTimeFormatStringToken("\t"));
                             break;
                         case 'v':
                             addToPattern(compiledPattern, "e-b-Y");
                             break;
                         case 'Z':
                             // +HH:MM in 'date', never zone name
-                            compiledPattern.add(StrptimeToken.zoneOffsetColons(1));
+                            compiledPattern.add(new RubyTimeFormatTimeZoneOffsetToken(1));
                             break;
                         case '+':
                             addToPattern(compiledPattern, "a b e H:M:S ");
                             // %Z: +HH:MM in 'date', never zone name
-                            compiledPattern.add(StrptimeToken.zoneOffsetColons(1));
+                            compiledPattern.add(new RubyTimeFormatTimeZoneOffsetToken(1));
                             addToPattern(compiledPattern, " Y");
                             break;
                         default:
@@ -327,36 +188,9 @@ public class StrptimeParser
         return compiledPattern;
     }
 
-    public FormatBag parse(final List<StrptimeToken> compiledPattern, final String text)
+    public TimeParseResult parse(final List<RubyTimeFormatToken> compiledPattern, final String text)
     {
-        final FormatBag bag = new StringParser(text).parse(compiledPattern);
-        if (bag == null) {
-            return null;
-        }
-
-        if (FormatBag.has(bag.cent)) {
-            if (FormatBag.has(bag.cWYear)) {
-                bag.cWYear += bag.cent * 100;
-            }
-            if (FormatBag.has(bag.year)) {
-                bag.year += bag.cent * 100;
-            }
-
-            // delete bag._cent
-            bag.cent = Integer.MIN_VALUE;
-        }
-
-        if (FormatBag.has(bag.merid)) {
-            if (FormatBag.has(bag.hour)) {
-                bag.hour %= 12;
-                bag.hour += bag.merid;
-            }
-
-            // delete bag._merid
-            bag.merid = Integer.MIN_VALUE;
-        }
-
-        return bag;
+        return new StringParser(text).parse(compiledPattern);
     }
 
     private static class StringParser
@@ -368,7 +202,6 @@ public class StrptimeParser
                         ")", Pattern.CASE_INSENSITIVE);
 
         private final String text;
-        private final FormatBag bag;
 
         private int pos;
         private boolean fail;
@@ -376,20 +209,22 @@ public class StrptimeParser
         private StringParser(String text)
         {
             this.text = text;
-            this.bag = new FormatBag();
 
             this.pos = 0;
             this.fail = false;
         }
 
-        private FormatBag parse(final List<StrptimeToken> compiledPattern)
+        private TimeParseResult parse(final List<RubyTimeFormatToken> compiledPattern)
         {
-            for (int tokenIndex = 0; tokenIndex < compiledPattern.size(); tokenIndex++) {
-                final StrptimeToken token = compiledPattern.get(tokenIndex);
+            final TimeParseResult.RubyStyleBuilder builder = TimeParseResult.rubyStyleBuilder(this.text);
 
-                switch (token.getFormat()) {
-                    case FORMAT_STRING: {
-                        final String str = token.getData().toString();
+            for (int tokenIndex = 0; tokenIndex < compiledPattern.size(); tokenIndex++) {
+                final RubyTimeFormatToken token = compiledPattern.get(tokenIndex);
+
+                switch (token.getFormatDirective()) {
+                    case STRING: {
+                        final RubyTimeFormatStringToken stringToken = (RubyTimeFormatStringToken) token;
+                        final String str = stringToken.getStringContent();
                         for (int i = 0; i < str.length(); i++) {
                             final char c = str.charAt(i);
                             if (isSpace(c)) {
@@ -406,11 +241,11 @@ public class StrptimeParser
                         }
                         break;
                     }
-                    case FORMAT_WEEK_LONG: // %A - The full weekday name (``Sunday'')
-                    case FORMAT_WEEK_SHORT: { // %a - The abbreviated name (``Sun'')
+                    case DAY_OF_WEEK_FULL_NAME: // %A - The full weekday name (``Sunday'')
+                    case DAY_OF_WEEK_ABBREVIATED_NAME: { // %a - The abbreviated name (``Sun'')
                         final int dayIndex = findIndexInPatterns(DAY_NAMES);
                         if (dayIndex >= 0) {
-                            bag.wDay = dayIndex % 7;
+                            builder.setDayOfWeekStartingWithSunday0(dayIndex % 7);
                             pos += DAY_NAMES[dayIndex].length();
                         }
                         else {
@@ -418,11 +253,12 @@ public class StrptimeParser
                         }
                         break;
                     }
-                    case FORMAT_MONTH_LONG: // %B - The full month name (``January'')
-                    case FORMAT_MONTH_SHORT: { // %b, %h - The abbreviated month name (``Jan'')
+                    case MONTH_OF_YEAR_FULL_NAME: // %B - The full month name (``January'')
+                    case MONTH_OF_YEAR_ABBREVIATED_NAME:  // %b, %h - The abbreviated month name (``Jan'')
+                    case MONTH_OF_YEAR_ABBREVIATED_NAME_ALIAS_SMALL_H: {
                         final int monIndex = findIndexInPatterns(MONTH_NAMES);
                         if (monIndex >= 0) {
-                            bag.mon = monIndex % 12 + 1;
+                            builder.setMonthOfYear(monIndex % 12 + 1);
                             pos += MONTH_NAMES[monIndex].length();
                         }
                         else {
@@ -430,7 +266,7 @@ public class StrptimeParser
                         }
                         break;
                     }
-                    case FORMAT_CENTURY: { // %C - year / 100 (round down.  20 in 2009)
+                    case CENTURY: { // %C - year / 100 (round down.  20 in 2009)
                         final long cent;
                         if (isNumberPattern(compiledPattern, tokenIndex)) {
                             cent = readDigits(2);
@@ -438,11 +274,11 @@ public class StrptimeParser
                         else {
                             cent = readDigitsMax();
                         }
-                        bag.cent = (int)cent;
+                        builder.setCentury((int)cent);
                         break;
                     }
-                    case FORMAT_DAY: // %d, %Od - Day of the month, zero-padded (01..31)
-                    case FORMAT_DAY_S: { // %e, %Oe - Day of the month, blank-padded ( 1..31)
+                    case DAY_OF_MONTH_ZERO_PADDED: // %d, %Od - Day of the month, zero-padded (01..31)
+                    case DAY_OF_MONTH_BLANK_PADDED: { // %e, %Oe - Day of the month, blank-padded ( 1..31)
                         final long day;
                         if (isBlank(text, pos)) {
                             pos += 1; // blank
@@ -455,10 +291,10 @@ public class StrptimeParser
                         if (!validRange(day, 1, 31)) {
                             fail = true;
                         }
-                        bag.mDay = (int)day;
+                        builder.setDayOfMonth((int)day);
                         break;
                     }
-                    case FORMAT_WEEKYEAR: { // %G - The week-based year
+                    case WEEK_BASED_YEAR_WITH_CENTURY: { // %G - The week-based year
                         final long year;
                         if (isNumberPattern(compiledPattern, tokenIndex)) {
                             year = readDigits(4);
@@ -466,22 +302,19 @@ public class StrptimeParser
                         else {
                             year = readDigitsMax();
                         }
-                        bag.cWYear = (int)year;
+                        builder.setWeekBasedYear((int)year);
                         break;
                     }
-                    case FORMAT_WEEKYEAR_SHORT: { // %g - The last 2 digits of the week-based year (00..99)
+                    case WEEK_BASED_YEAR_WITHOUT_CENTURY: { // %g - The last 2 digits of the week-based year (00..99)
                         final long v = readDigits(2);
                         if (!validRange(v, 0, 99)) {
                             fail = true;
                         }
-                        bag.cWYear = (int)v;
-                        if (!bag.has(bag.cent)) {
-                            bag.cent = v >= 69 ? 19 : 20;
-                        }
+                        builder.setWeekBasedYearWithoutCentury((int)v);
                         break;
                     }
-                    case FORMAT_HOUR: // %H, %OH - Hour of the day, 24-hour clock, zero-padded (00..23)
-                    case FORMAT_HOUR_BLANK: { // %k - Hour of the day, 24-hour clock, blank-padded ( 0..23)
+                    case HOUR_OF_DAY_ZERO_PADDED: // %H, %OH - Hour of the day, 24-hour clock, zero-padded (00..23)
+                    case HOUR_OF_DAY_BLANK_PADDED: { // %k - Hour of the day, 24-hour clock, blank-padded ( 0..23)
                         final long hour;
                         if (isBlank(text, pos)) {
                             pos += 1; // blank
@@ -494,11 +327,11 @@ public class StrptimeParser
                         if (!validRange(hour, 0, 24)) {
                             fail = true;
                         }
-                        bag.hour = (int)hour;
+                        builder.setHour((int)hour);
                         break;
                     }
-                    case FORMAT_HOUR_M: // %I, %OI - Hour of the day, 12-hour clock, zero-padded (01..12)
-                    case FORMAT_HOUR_S: { // %l - Hour of the day, 12-hour clock, blank-padded ( 1..12)
+                    case HOUR_OF_AMPM_ZERO_PADDED: // %I, %OI - Hour of the day, 12-hour clock, zero-padded (01..12)
+                    case HOUR_OF_AMPM_BLANK_PADDED: { // %l - Hour of the day, 12-hour clock, blank-padded ( 1..12)
                         final long hour;
                         if (isBlank(text, pos)) {
                             pos += 1; // blank
@@ -511,19 +344,19 @@ public class StrptimeParser
                         if (!validRange(hour, 1, 12)) {
                             fail = true;
                         }
-                        bag.hour = (int)hour;
+                        builder.setHour((int)hour);
                         break;
                     }
-                    case FORMAT_DAY_YEAR: { // %j - Day of the year (001..366)
+                    case DAY_OF_YEAR: { // %j - Day of the year (001..366)
                         final long day = readDigits(3);
                         if (!validRange(day, 1, 365)) {
                             fail = true;
                         }
-                        bag.yDay = (int)day;
+                        builder.setDayOfYear((int)day);
                         break;
                     }
-                    case FORMAT_MILLISEC: // %L - Millisecond of the second (000..999)
-                    case FORMAT_NANOSEC: { // %N - Fractional seconds digits, default is 9 digits (nanosecond)
+                    case MILLI_OF_SECOND: // %L - Millisecond of the second (000..999)
+                    case NANO_OF_SECOND: { // %N - Fractional seconds digits, default is 9 digits (nanosecond)
                         boolean negative = false;
                         if (isSign(text, pos)) {
                             negative = text.charAt(pos) == '-';
@@ -533,7 +366,7 @@ public class StrptimeParser
                         final long v;
                         final int initPos = pos;
                         if (isNumberPattern(compiledPattern, tokenIndex)) {
-                            if (token.getFormat() == StrptimeFormat.FORMAT_MILLISEC) {
+                            if (token.getFormatDirective() == RubyTimeFormatDirective.MILLI_OF_SECOND) {
                                 v = readDigits(3);
                             }
                             else {
@@ -544,31 +377,30 @@ public class StrptimeParser
                             v = readDigitsMax();
                         }
 
-                        bag.secFraction = (int)(!negative ? v : -v);
-                        bag.secFractionSize = pos - initPos;
+                        builder.setNanoOfSecond((!negative ? v : -v) * (int) Math.pow(10, 9 - (pos - initPos)));
                         break;
                     }
-                    case FORMAT_MINUTES: { // %M, %OM - Minute of the hour (00..59)
+                    case MINUTE_OF_HOUR: { // %M, %OM - Minute of the hour (00..59)
                         final long min = readDigits(2);
                         if (!validRange(min, 0, 59)) {
                             fail = true;
                         }
-                        bag.min = (int)min;
+                        builder.setMinuteOfHour((int)min);
                         break;
                     }
-                    case FORMAT_MONTH: { // %m, %Om - Month of the year, zero-padded (01..12)
+                    case MONTH_OF_YEAR: { // %m, %Om - Month of the year, zero-padded (01..12)
                         final long mon = readDigits(2);
                         if (!validRange(mon, 1, 12)) {
                             fail = true;
                         }
-                        bag.mon = (int)mon;
+                        builder.setMonthOfYear((int)mon);
                         break;
                     }
-                    case FORMAT_MERIDIAN: // %P - Meridian indicator, lowercase (``am'' or ``pm'')
-                    case FORMAT_MERIDIAN_LOWER_CASE: { // %p - Meridian indicator, uppercase (``AM'' or ``PM'')
+                    case AMPM_OF_DAY_UPPER_CASE: // %P - Meridian indicator, lowercase (``am'' or ``pm'')
+                    case AMPM_OF_DAY_LOWER_CASE: { // %p - Meridian indicator, uppercase (``AM'' or ``PM'')
                         final int meridIndex = findIndexInPatterns(MERID_NAMES);
                         if (meridIndex >= 0) {
-                            bag.merid = meridIndex % 2 == 0 ? 0 : 12;
+                            builder.setAmPmOfDay(meridIndex % 2 == 0 ? 0 : 12);
                             pos += MERID_NAMES[meridIndex].length();
                         }
                         else {
@@ -576,27 +408,27 @@ public class StrptimeParser
                         }
                         break;
                     }
-                    case FORMAT_MICROSEC_EPOCH: { // %Q - Number of microseconds since 1970-01-01 00:00:00 UTC.
+                    case MICROSECOND_SINCE_EPOCH: { // %Q - Number of microseconds since 1970-01-01 00:00:00 UTC.
                         boolean negative = false;
                         if (isMinus(text, pos)) {
                             negative = true;
                             pos++;
                         }
 
-                        final long sec = readDigitsMax();
-                        bag.seconds = !negative ? sec : -sec;
-                        bag.secondsSize = 3;
+                        final long sec = (negative ? -readDigitsMax() : readDigitsMax());
+
+                        builder.setSecondSinceEpoch(sec / 1000L, sec % 1000L * (long) Math.pow(10, 6));
                         break;
                     }
-                    case FORMAT_SECONDS: { // %S - Second of the minute (00..59)
+                    case SECOND_OF_MINUTE: { // %S - Second of the minute (00..59)
                         final long sec = readDigits(2);
                         if (!validRange(sec, 0, 60)) {
                             fail = true;
                         }
-                        bag.sec = (int)sec;
+                        builder.setSecondOfMinute((int)sec);
                         break;
                     }
-                    case FORMAT_EPOCH: { // %s - Number of seconds since 1970-01-01 00:00:00 UTC.
+                    case SECOND_SINCE_EPOCH: { // %s - Number of seconds since 1970-01-01 00:00:00 UTC.
                         boolean negative = false;
                         if (isMinus(text, pos)) {
                             negative = true;
@@ -604,48 +436,48 @@ public class StrptimeParser
                         }
 
                         final long sec = readDigitsMax();
-                        bag.seconds = (int)(!negative ? sec : -sec);
+                        builder.setSecondSinceEpoch(!negative ? sec : -sec, 0);
                         break;
                     }
-                    case FORMAT_WEEK_YEAR_S: // %U, %OU - Week number of the year.  The week starts with Sunday.  (00..53)
-                    case FORMAT_WEEK_YEAR_M: { // %W, %OW - Week number of the year.  The week starts with Monday.  (00..53)
+                    case WEEK_OF_YEAR_STARTING_WITH_SUNDAY: // %U, %OU - Week number of the year.  The week starts with Sunday.  (00..53)
+                    case WEEK_OF_YEAR_STARTING_WITH_MONDAY: { // %W, %OW - Week number of the year.  The week starts with Monday.  (00..53)
                         final long week = readDigits(2);
                         if (!validRange(week, 0, 53)) {
                             fail = true;
                         }
 
-                        if (token.getFormat() == StrptimeFormat.FORMAT_WEEK_YEAR_S) {
-                            bag.wNum0 = (int)week;
+                        if (token.getFormatDirective() == RubyTimeFormatDirective.WEEK_OF_YEAR_STARTING_WITH_SUNDAY) {
+                            builder.setWeekOfYearStartingWithSunday((int)week);
                         } else {
-                            bag.wNum1 = (int)week;
+                            builder.setWeekOfYearStartingWithMonday((int)week);
                         }
                         break;
                     }
-                    case FORMAT_DAY_WEEK2: { // %u, %Ou - Day of the week (Monday is 1, 1..7)
+                    case DAY_OF_WEEK_STARTING_WITH_MONDAY_1: { // %u, %Ou - Day of the week (Monday is 1, 1..7)
                         final long day = readDigits(1);
                         if (!validRange(day, 1, 7)) {
                             fail = true;
                         }
-                        bag.cWDay = (int)day;
+                        builder.setDayOfWeekStartingWithMonday1((int)day);
                         break;
                     }
-                    case FORMAT_WEEK_WEEKYEAR: { // %V, %OV - Week number of the week-based year (01..53)
+                    case WEEK_OF_WEEK_BASED_YEAR: { // %V, %OV - Week number of the week-based year (01..53)
                         final long week = readDigits(2);
                         if (!validRange(week, 1, 53)) {
                             fail = true;
                         }
-                        bag.cWeek = (int)week;
+                        builder.setWeekOfWeekBasedYear((int)week);
                         break;
                     }
-                    case FORMAT_DAY_WEEK: { // %w - Day of the week (Sunday is 0, 0..6)
+                    case DAY_OF_WEEK_STARTING_WITH_SUNDAY_0: { // %w - Day of the week (Sunday is 0, 0..6)
                         final long day = readDigits(1);
                         if (!validRange(day, 0, 6)) {
                             fail = true;
                         }
-                        bag.wDay = (int)day;
+                        builder.setDayOfWeekStartingWithSunday0((int)day);
                         break;
                     }
-                    case FORMAT_YEAR_LONG: {
+                    case YEAR_WITH_CENTURY: {
                         // %Y, %EY - Year with century (can be negative, 4 digits at least)
                         //           -0001, 0000, 1995, 2009, 14292, etc.
                         boolean negative = false;
@@ -661,22 +493,19 @@ public class StrptimeParser
                             year = readDigitsMax();
                         }
 
-                        bag.year = (int)(!negative ? year : -year);
+                        builder.setYear((int)(!negative ? year : -year));
                         break;
                     }
-                    case FORMAT_YEAR_SHORT: { // %y, %Ey, %Oy - year % 100 (00..99)
+                    case YEAR_WITHOUT_CENTURY: { // %y, %Ey, %Oy - year % 100 (00..99)
                         final long y = readDigits(2);
                         if (!validRange(y, 0, 99)) {
                             fail = true;
                         }
-                        bag.year = (int)y;
-                        if (!bag.has(bag.cent)) {
-                            bag.cent = y >= 69 ? 19 : 20;
-                        }
+                        builder.setYearWithoutCentury((int)y);
                         break;
                     }
-                    case FORMAT_ZONE_ID: // %Z - Time zone abbreviation name
-                    case FORMAT_COLON_ZONE_OFF: {
+                    case TIME_ZONE_NAME: // %Z - Time zone abbreviation name
+                    case TIME_OFFSET: {
                         // %z - Time zone as hour and minute offset from UTC (e.g. +0900)
                         //      %:z - hour and minute offset from UTC with a colon (e.g. +09:00)
                         //      %::z - hour, minute and second offset from UTC (e.g. +09:00:00)
@@ -691,16 +520,16 @@ public class StrptimeParser
                         if (m.find()) {
                             // zone
                             String zone = text.substring(pos, pos + m.end());
-                            bag.zone = zone;
+                            builder.setTimeOffset(zone);
                             pos += zone.length();
                         } else {
                             fail = true;
                         }
                         break;
                     }
-                    case FORMAT_SPECIAL:
+                    case SPECIAL:
                     {
-                        throw new Error("FORMAT_SPECIAL is a special token only for the lexer.");
+                        throw new Error("SPECIAL is a special token only for the lexer.");
                     }
                 }
             }
@@ -710,10 +539,10 @@ public class StrptimeParser
             }
 
             if (text.length() > pos) {
-                bag.leftover = text.substring(pos, text.length());
+                builder.setLeftover(text.substring(pos, text.length()));
             }
 
-            return bag;
+            return builder.build();
         }
 
         /**
@@ -782,18 +611,19 @@ public class StrptimeParser
          * Ported from num_pattern_p in MRI 2.3.1's ext/date/date_strptime.c under BSDL.
          * @see <a href="https://github.com/ruby/ruby/blob/394fa89c67722d35bdda89f10c7de5c304a5efb1/ext/date/date_strftime.c">date_strftime.c</a>
          */
-        private static boolean isNumberPattern(final List<StrptimeToken> compiledPattern, final int i)
+        private static boolean isNumberPattern(final List<RubyTimeFormatToken> compiledPattern, final int i)
         {
             if (compiledPattern.size() <= i + 1) {
                 return false;
             }
             else {
-                final StrptimeToken nextToken = compiledPattern.get(i + 1);
-                final StrptimeFormat f = nextToken.getFormat();
-                if (f == StrptimeFormat.FORMAT_STRING && isDigit(((String) nextToken.getData()).charAt(0))) {
+                final RubyTimeFormatToken nextToken = compiledPattern.get(i + 1);
+                final RubyTimeFormatDirective f = nextToken.getFormatDirective();
+                if (f == RubyTimeFormatDirective.STRING &&
+                    isDigit(((RubyTimeFormatStringToken) nextToken).getStringContent().charAt(0))) {
                     return true;
                 }
-                else if (NUMBER_PATTERNS.contains(f)) {
+                else if (RubyTimeFormatDirective.NUMERIC_DIRECTIVES.contains(f)) {
                     return true;
                 }
                 else {
@@ -801,40 +631,6 @@ public class StrptimeParser
                 }
             }
         }
-
-        // CDdeFGgHIjkLlMmNQRrSsTUuVvWwXxYy
-        private static final EnumSet<StrptimeFormat> NUMBER_PATTERNS =
-                EnumSet.copyOf(Arrays.asList(
-                        StrptimeFormat.FORMAT_CENTURY, // 'C'
-                        // D
-                        StrptimeFormat.FORMAT_DAY, // 'd'
-                        StrptimeFormat.FORMAT_DAY_S, // 'e'
-                        // F
-                        StrptimeFormat.FORMAT_WEEKYEAR, // 'G'
-                        StrptimeFormat.FORMAT_WEEKYEAR_SHORT, // 'g'
-                        StrptimeFormat.FORMAT_HOUR, // 'H'
-                        StrptimeFormat.FORMAT_HOUR_M, // 'I'
-                        StrptimeFormat.FORMAT_DAY_YEAR, // 'j'
-                        StrptimeFormat.FORMAT_HOUR_BLANK, // 'k'
-                        StrptimeFormat.FORMAT_MILLISEC, // 'L'
-                        StrptimeFormat.FORMAT_HOUR_S, // 'l'
-                        StrptimeFormat.FORMAT_MINUTES, // 'M'
-                        StrptimeFormat.FORMAT_MONTH, // 'm'
-                        StrptimeFormat.FORMAT_NANOSEC, // 'N'
-                        // Q, R, r
-                        StrptimeFormat.FORMAT_SECONDS, // 'S'
-                        StrptimeFormat.FORMAT_EPOCH, // 's'
-                        // T
-                        StrptimeFormat.FORMAT_WEEK_YEAR_S, // 'U'
-                        StrptimeFormat.FORMAT_DAY_WEEK2, // 'u'
-                        StrptimeFormat.FORMAT_WEEK_WEEKYEAR, // 'V'
-                        // v
-                        StrptimeFormat.FORMAT_WEEK_YEAR_M, // 'W'
-                        StrptimeFormat.FORMAT_DAY_WEEK, // 'w'
-                        // X, x
-                        StrptimeFormat.FORMAT_YEAR_LONG, // 'Y'
-                        StrptimeFormat.FORMAT_YEAR_SHORT // 'y'
-                ));
 
         /**
          * Ported from valid_pattern_p in MRI 2.3.1's ext/date/date_strptime.c under BSDL.
